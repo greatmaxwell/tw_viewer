@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <title>COMTRADE ASCII 波形查看器</title>
+  <title>行波CPU波形查看器</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { box-sizing: border-box; }
@@ -131,8 +131,8 @@
 </head>
 <body>
   <div class="app">
-    <h1>COMTRADE ASCII 波形查看器</h1>
-    <div class="subtitle">本页在浏览器本地解析 .cfg / .dat（ASCII），不依赖 MATLAB / 服务器。</div>
+    <h1>行波CPU波形查看器</h1>
+    <div class="subtitle">选择.cfg文件和.dat文件后，点击绘图</div>
 
     <div class="controls">
       <div class="field">
@@ -145,7 +145,7 @@
       </div>
       <div class="field" style="flex:0 0 auto;">
         <!-- 初始禁用，选完两个文件后再启用 -->
-        <button id="parseBtn" disabled>解析并绘图</button>
+        <button id="parseBtn" disabled>绘图</button>
       </div>
       <div id="status"></div>
     </div>
