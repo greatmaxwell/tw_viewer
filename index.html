@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>COMTRADE ASCII 波形查看器</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #f5f5f7;
+      color: #222;
+    }
+    .app {
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 16px 20px 40px;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 8px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 20px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 20px;
+      align-items: flex-end;
+      margin-bottom: 20px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      min-width: 200px;
+      flex: 1;
+    }
+    .field label {
+      font-size: 12px;
+      margin-bottom: 4px;
+      color: #555;
+    }
+    .field input[type="file"] {
+      font-size: 12px;
+    }
+    button {
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: none;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #2563eb;
+      color: #fff;
+      box-shadow: 0 3px 10px rgba(37, 99, 235, 0.3);
+      transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.15s ease;
+      white-space: nowrap;
+    }
+    button:disabled {
+      background: #9ca3af;
+      box-shadow: none;
+      cursor: default;
+      transform: none;
+    }
+    button:not(:disabled):hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+    }
+    #status {
+      font-size: 12px;
+      color: #555;
+      margin-left: 8px;
+      min-height: 18px;
+    }
+    .status-error {
+      color: #b91c1c;
+    }
+    .status-ok {
+      color: #047857;
+    }
+    .charts-wrapper {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+    }
+    @media (min-width: 900px) {
+      .charts-wrapper {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+    .chart-card {
+      background: #f9fafb;
+      border-radius: 12px;
+      padding: 10px 12px 16px;
+      border: 1px solid #e5e7eb;
+    }
+    .chart-card h2 {
+      font-size: 14px;
+      margin: 0 0 4px;
+    }
+    .chart-card .chart-subtitle {
+      font-size: 11px;
+      color: #6b7280;
+      margin-bottom: 6px;
+    }
+    .download-area {
+      margin-top: 12px;
+      font-size: 12px;
+    }
+    .download-link {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .download-link:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>COMTRADE ASCII 波形查看器</h1>
+    <div class="subtitle">本页在浏览器本地解析 .cfg / .dat（ASCII），不依赖 MATLAB / 服务器。</div>
+
+    <div class="controls">
+      <div class="field">
+        <label for="cfgInput">选择配置文件（*.cfg）</label>
+        <input type="file" id="cfgInput" accept=".cfg" />
+      </div>
+      <div class="field">
+        <label for="datInput">选择数据文件（*.dat，ASCII 格式）</label>
+        <input type="file" id="datInput" accept=".dat" />
+      </div>
+      <div class="field" style="flex:0 0 auto;">
+        <!-- 初始禁用，选完两个文件后再启用 -->
+        <button id="parseBtn" disabled>解析并绘图</button>
+      </div>
+      <div id="status"></div>
+    </div>
+
+    <div class="download-area" id="downloadArea"></div>
+
+    <div class="charts-wrapper">
+      <div class="chart-card">
+        <h2>电压波形</h2>
+        <div class="chart-subtitle">自动识别单位为 V 的模拟量通道</div>
+        <canvas id="voltageChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h2>电流波形</h2>
+        <div class="chart-subtitle">自动识别单位为 A 的模拟量通道</div>
+        <canvas id="currentChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function trim(str) {
+      return str.replace(/^\s+|\s+$/g, "");
+    }
+
+    function parseCfg(text) {
+      const rawLines = text.split(/\r?\n/);
+      const lines = rawLines.filter(line => trim(line) !== "");
+      if (lines.length < 4) {
+        throw new Error("cfg 文件内容过短。");
+      }
+      let idx = 0;
+      const firstLine = lines[idx++];
+      const secondLine = lines[idx++];
+
+      const chParts = secondLine.split(",").map(p => trim(p));
+      if (chParts.length < 3) {
+        throw new Error("cfg 第二行格式异常（通道描述）。");
+      }
+      const totalChannels = parseInt(chParts[0], 10);
+      const numAnalog = parseInt(chParts[1], 10);
+      const numDigital = parseInt(chParts[2], 10);
+
+      if (!Number.isFinite(totalChannels) || !Number.isFinite(numAnalog)) {
+        throw new Error("无法解析模拟量通道数量。");
+      }
+
+      const analogChannels = [];
+      for (let i = 0; i < numAnalog; i++) {
+        if (idx >= lines.length) {
+          throw new Error("读取模拟量通道定义时提前到达文件尾。");
+        }
+        const line = lines[idx++];
+        const parts = line.split(",").map(p => trim(p));
+        if (parts.length < 7) {
+          throw new Error("模拟量通道定义字段不足（第 " + (i + 1) + " 个）。");
+        }
+        const index = parseInt(parts[0], 10);
+        const name = parts[1] || ("AN" + index);
+        const phase = parts[2] || "";
+        const unit = parts[4] || "";
+        const a = parseFloat(parts[5]);
+        const b = parseFloat(parts[6]);
+        analogChannels.push({
+          index,
+          name,
+          phase,
+          unit,
+          a: Number.isFinite(a) ? a : 1.0,
+          b: Number.isFinite(b) ? b : 0.0
+        });
+      }
+
+      for (let i = 0; i < numDigital; i++) {
+        if (idx < lines.length) idx++;
+      }
+
+      if (idx < lines.length) idx++; // 频率
+      let numSampleRates = 1;
+      if (idx < lines.length) {
+        const srLine = lines[idx++];
+        const val = parseInt(trim(srLine), 10);
+        if (Number.isFinite(val) && val > 0) {
+          numSampleRates = val;
+        }
+      }
+
+      const sampleRates = [];
+      const sampleCounts = [];
+      for (let i = 0; i < numSampleRates; i++) {
+        if (idx >= lines.length) {
+          throw new Error("读取采样率定义时提前到达文件尾。");
+        }
+        const line = lines[idx++];
+        const parts = line.split(",").map(p => trim(p));
+        if (parts.length < 2) {
+          throw new Error("采样率行字段不足。");
+        }
+        const fs = parseFloat(parts[0]);
+        const pn = parseInt(parts[1], 10);
+        sampleRates.push(Number.isFinite(fs) ? fs : 0);
+        sampleCounts.push(Number.isFinite(pn) ? pn : 0);
+      }
+
+      if (idx < lines.length) idx++;
+      if (idx < lines.length) idx++;
+
+      let dataFormat = "ASCII";
+      for (let i = idx; i < lines.length; i++) {
+        const l = trim(lines[i]).toUpperCase();
+        if (!l) continue;
+        if (l.includes("ASCII")) {
+          dataFormat = "ASCII";
+          break;
+        }
+        if (l.includes("BINARY")) {
+          dataFormat = "BINARY";
+          break;
+        }
+      }
+
+      return {
+        totalChannels,
+        numAnalog,
+        numDigital,
+        analogChannels,
+        dataFormat,
+        sampleRates,
+        sampleCounts
+      };
+    }
+
+    function buildTimeFromCfg(numSamples, sampleRates, sampleCounts) {
+      const t = new Array(numSamples);
+      if (!sampleRates || sampleRates.length === 0) {
+        for (let i = 0; i < numSamples; i++) t[i] = i;
+        return t;
+      }
+      const nSections = sampleRates.length;
+      let sectionStartIndex = 0;
+      let sectionStartTime = 0;
+
+      for (let s = 0; s < nSections && sectionStartIndex < numSamples; s++) {
+        const rate = sampleRates[s];
+        const dt = rate > 0 ? 1.0 / rate : 0.0;
+        const pn = (sampleCounts && sampleCounts.length > s) ? sampleCounts[s] : numSamples;
+        const sectionEndIndex = Math.min(pn, numSamples);
+
+        if (dt <= 0) {
+          for (let n = sectionStartIndex; n < sectionEndIndex; n++) {
+            t[n] = sectionStartTime + (n - sectionStartIndex);
+          }
+          if (sectionEndIndex > sectionStartIndex) {
+            sectionStartTime = t[sectionEndIndex - 1] + 1;
+          }
+          sectionStartIndex = sectionEndIndex;
+        } else {
+          for (let n = sectionStartIndex; n < sectionEndIndex; n++) {
+            t[n] = sectionStartTime + dt * (n - sectionStartIndex);
+          }
+          if (sectionEndIndex > sectionStartIndex) {
+            sectionStartTime = t[sectionEndIndex - 1] + dt;
+          }
+          sectionStartIndex = sectionEndIndex;
+        }
+      }
+
+      if (sectionStartIndex < numSamples) {
+        const lastRate = sampleRates[sampleRates.length - 1];
+        const dtLast = lastRate > 0 ? 1.0 / lastRate : 0.0;
+        for (let n = sectionStartIndex; n < numSamples; n++) {
+          t[n] = sectionStartTime + dtLast * (n - sectionStartIndex);
+        }
+      }
+
+      return t;
+    }
+
+    function parseDatAscii(text, cfg) {
+      const lines = text.split(/\r?\n/);
+      const analogData = Array.from({ length: cfg.numAnalog }, () => []);
+      let numSamples = 0;
+
+      for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        if (!raw) continue;
+        const line = trim(raw);
+        if (!line) continue;
+
+        const parts = line.split(",").map(p => trim(p));
+        if (parts.length < 2 + cfg.numAnalog) {
+          continue;
+        }
+
+        for (let k = 0; k < cfg.numAnalog; k++) {
+          const rawVal = parseFloat(parts[2 + k]);
+          const ch = cfg.analogChannels[k];
+          const x = Number.isFinite(rawVal) ? rawVal : 0;
+          const y = ch.a * x + ch.b;
+          analogData[k].push(y);
+        }
+        numSamples++;
+      }
+
+      if (numSamples === 0) {
+        throw new Error(".dat 文件中未解析到有效数据行。");
+      }
+
+      const timeSec = buildTimeFromCfg(numSamples, cfg.sampleRates, cfg.sampleCounts);
+      return { timeSec, analogData };
+    }
+
+    function buildCsv(cfg, timeMs, analogData) {
+      const header = ["t_ms"].concat(cfg.analogChannels.map(ch => ch.name || "AN" + ch.index));
+      const rows = [header.join(",")];
+      const n = timeMs.length;
+      for (let i = 0; i < n; i++) {
+        const row = [timeMs[i].toString()];
+        for (let k = 0; k < cfg.numAnalog; k++) {
+          const arr = analogData[k];
+          row.push(i < arr.length ? arr[i].toString() : "");
+        }
+        rows.push(row.join(","));
+      }
+      return rows.join("\r\n");
+    }
+
+    let voltageChart = null;
+    let currentChart = null;
+
+    function createOrUpdateChart(canvasId, datasets, xLabel, yLabel) {
+      const ctx = document.getElementById(canvasId).getContext("2d");
+
+      if (canvasId === "voltageChart" && voltageChart) {
+        voltageChart.destroy();
+      }
+      if (canvasId === "currentChart" && currentChart) {
+        currentChart.destroy();
+      }
+
+      const chart = new Chart(ctx, {
+        type: "line",
+        data: { datasets },
+        options: {
+          responsive: true,
+          animation: false,
+          normalized: true,
+          parsing: false,
+          interaction: {
+            mode: "nearest",
+            intersect: false
+          },
+          plugins: {
+            legend: {
+              position: "top",
+              labels: {
+                boxWidth: 14,
+                usePointStyle: true
+              }
+            },
+            tooltip: {
+              mode: "index",
+              intersect: false,
+              callbacks: {
+                title: (items) => {
+                  if (!items || !items.length) return "";
+                  return "t = " + items[0].parsed.x.toFixed(3) + " ms";
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              type: "linear",
+              title: {
+                display: true,
+                text: xLabel
+              },
+              ticks: {
+                maxTicksLimit: 8
+              }
+            },
+            y: {
+              title: {
+                display: true,
+                text: yLabel
+              }
+            }
+          },
+          elements: {
+            line: {
+              tension: 0
+            },
+            point: {
+              radius: 0
+            }
+          }
+        }
+      });
+
+      if (canvasId === "voltageChart") {
+        voltageChart = chart;
+      } else {
+        currentChart = chart;
+      }
+    }
+
+    function makeDatasetsFromSelection(timeMs, analogData, indices, cfg) {
+      const datasets = [];
+      const n = timeMs.length;
+      indices.forEach(idx => {
+        if (idx < 0 || idx >= cfg.numAnalog) return;
+        const ch = cfg.analogChannels[idx];
+        const series = [];
+        const arr = analogData[idx];
+        const len = Math.min(n, arr.length);
+        for (let i = 0; i < len; i++) {
+          series.push({ x: timeMs[i], y: arr[i] });
+        }
+        datasets.push({
+          label: ch.name || ("CH" + ch.index),
+          data: series,
+          borderWidth: 1,
+          pointRadius: 0
+        });
+      });
+      return datasets;
+    }
+
+    function splitVoltageCurrent(cfg) {
+      const voltageIdx = [];
+      const currentIdx = [];
+      cfg.analogChannels.forEach((ch, idx) => {
+        const unit = (ch.unit || "").toUpperCase();
+        if (unit === "V") voltageIdx.push(idx);
+        else if (unit === "A") currentIdx.push(idx);
+      });
+      return { voltageIdx, currentIdx };
+    }
+
+    (function initApp() {
+      const cfgInput = document.getElementById("cfgInput");
+      const datInput = document.getElementById("datInput");
+      const parseBtn = document.getElementById("parseBtn");
+      const statusEl = document.getElementById("status");
+      const downloadArea = document.getElementById("downloadArea");
+
+      let cfgFile = null;
+      let datFile = null;
+
+      function setStatus(msg, type) {
+        statusEl.textContent = msg || "";
+        statusEl.className = "";
+        if (type === "error") {
+          statusEl.classList.add("status-error");
+        } else if (type === "ok") {
+          statusEl.classList.add("status-ok");
+        }
+      }
+
+      function updateButtonState() {
+        parseBtn.disabled = !(cfgFile && datFile);
+      }
+
+      function readFileAsText(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
+          reader.readAsText(file);
+        });
+      }
+
+      cfgInput.addEventListener("change", (e) => {
+        cfgFile = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+        updateButtonState();
+        setStatus("", null);
+      });
+
+      datInput.addEventListener("change", (e) => {
+        datFile = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+        updateButtonState();
+        setStatus("", null);
+      });
+
+      parseBtn.addEventListener("click", () => {
+        if (!cfgFile || !datFile) {
+          setStatus("请先选择 cfg 和 dat 两个文件。", "error");
+          return;
+        }
+        setStatus("正在读取和解析文件…", null);
+        downloadArea.innerHTML = "";
+
+        Promise.all([readFileAsText(cfgFile), readFileAsText(datFile)])
+          .then(([cfgText, datText]) => {
+            const cfg = parseCfg(cfgText);
+            if (cfg.dataFormat.toUpperCase() !== "ASCII") {
+              throw new Error("当前仅支持 ASCII 格式 COMTRADE，检测到格式为: " + cfg.dataFormat);
+            }
+
+            const { timeSec, analogData } = parseDatAscii(datText, cfg);
+            const timeMs = timeSec.map(t => t * 1000.0);
+
+            const { voltageIdx, currentIdx } = splitVoltageCurrent(cfg);
+
+            if (voltageIdx.length === 0 && currentIdx.length === 0) {
+              setStatus("解析成功，但未在 cfg 中识别到单位为 V 或 A 的模拟量通道。", "error");
+            } else {
+              setStatus("解析完成，共 " + timeMs.length + " 个采样点。", "ok");
+            }
+
+            const vDatasets = makeDatasetsFromSelection(timeMs, analogData, voltageIdx, cfg);
+            const cDatasets = makeDatasetsFromSelection(timeMs, analogData, currentIdx, cfg);
+
+            if (vDatasets.length > 0) {
+              createOrUpdateChart("voltageChart", vDatasets, "时间 / ms", "电压 / V");
+            } else {
+              createOrUpdateChart("voltageChart", [], "时间 / ms", "电压 / V");
+            }
+
+            if (cDatasets.length > 0) {
+              createOrUpdateChart("currentChart", cDatasets, "时间 / ms", "电流 / A");
+            } else {
+              createOrUpdateChart("currentChart", [], "时间 / ms", "电流 / A");
+            }
+
+            const csv = buildCsv(cfg, timeMs, analogData);
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            const baseName = cfgFile.name.replace(/\.cfg$/i, "");
+            a.download = (baseName || "data") + ".csv";
+            a.textContent = "导出数据为 CSV（" + (baseName || "data") + ".csv）";
+            a.className = "download-link";
+
+            downloadArea.innerHTML = "";
+            downloadArea.appendChild(a);
+          })
+          .catch(err => {
+            console.error(err);
+            setStatus("解析失败：" + (err && err.message ? err.message : err), "error");
+          });
+      });
+    })();
+  </script>
+</body>
+</html>
